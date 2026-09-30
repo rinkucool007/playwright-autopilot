@@ -1,0 +1,10 @@
+{
+  "name": "playwright-autopilot",
+  "version": "1.0.0",
+  "description": "Agentic Playwright plugin for Claude Code: an orchestrator with specialist subagents (planner, explorer, generator, executor, healer, reviewer) running a reasoning lifecycle to write, run, heal and review end-to-end tests.",
+  "author": { "name": "Pratap P" },
+  "homepage": "https://github.com/YOUR_GITHUB_USER/playwright-autopilot",
+  "repository": "https://github.com/YOUR_GITHUB_USER/playwright-autopilot",
+  "license": "MIT",
+  "keywords": ["playwright", "e2e", "testing", "qa", "agents", "subagents", "test-automation", "self-healing"]
+}

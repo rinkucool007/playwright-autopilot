@@ -1,0 +1,18 @@
+{
+  "name": "playwright-autopilot",
+  "owner": { "name": "Pratap P" },
+  "metadata": {
+    "description": "Marketplace for the Playwright Autopilot plugin",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "playwright-autopilot",
+      "source": "./",
+      "description": "Orchestrator + subagent Playwright E2E test authoring with a reasoning lifecycle (understand, plan, explore, generate, execute, heal, review, report).",
+      "version": "1.0.0",
+      "category": "testing",
+      "tags": ["playwright", "e2e", "qa", "agents"]
+    }
+  ]
+}
