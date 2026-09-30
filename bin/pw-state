@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+// Reasoning lifecycle state machine for playwright-autopilot.
+// State lives in .pw-autopilot/runs/<runId>/state.json inside the user's project.
+//
+//   pw-state init "<goal>"                      -> creates a run, prints runId
+//   pw-state status [runId]                     -> prints current phase + history
+//   pw-state advance <PHASE> [runId]            -> moves to PHASE (validates transition)
+//   pw-state reason <PHASE> '<json>' [runId]    -> appends a reasoning record
+//   pw-state artifact <key> <path> [runId]      -> registers an artifact (plan, pagemap, specs...)
+//   pw-state heal-attempt [runId]               -> increments heal counter, exits 3 when budget spent
+const fs = require('node:fs');
+const path = require('node:path');
+
+const ROOT = path.resolve(process.cwd(), '.pw-autopilot');
+const RUNS = path.join(ROOT, 'runs');
+const PHASES = ['UNDERSTAND', 'PLAN', 'EXPLORE', 'GENERATE', 'EXECUTE', 'HEAL', 'REVIEW', 'REPORT', 'DONE'];
+const ALLOWED = {
+  UNDERSTAND: ['PLAN'],
+  PLAN: ['EXPLORE', 'GENERATE'],            // GENERATE directly if no live app to explore
+  EXPLORE: ['GENERATE', 'PLAN'],            // back to PLAN if exploration invalidates the plan
+  GENERATE: ['EXECUTE'],
+  EXECUTE: ['REVIEW', 'HEAL'],
+  HEAL: ['EXECUTE', 'EXPLORE', 'REVIEW'],   // re-explore when locators are stale
+  REVIEW: ['REPORT', 'GENERATE'],           // reviewer can send work back
+  REPORT: ['DONE'],
+  DONE: [],
+};
+const MAX_HEAL = Number(process.env.PW_AUTOPILOT_MAX_HEAL || 3);
+
+const die = (msg, code = 1) => { console.error(`pw-state: ${msg}`); process.exit(code); };
+const latest = () => {
+  if (!fs.existsSync(RUNS)) return null;
+  const ids = fs.readdirSync(RUNS).filter((d) => fs.existsSync(path.join(RUNS, d, 'state.json'))).sort();
+  return ids.at(-1) || null;
+};
+const file = (id) => path.join(RUNS, id, 'state.json');
+const load = (id) => {
+  const runId = id || latest();
+  if (!runId) die('no run found. Start one with: pw-state init "<goal>"');
+  if (!fs.existsSync(file(runId))) die(`run ${runId} not found`);
+  return JSON.parse(fs.readFileSync(file(runId), 'utf8'));
+};
+const save = (s) => { s.updatedAt = new Date().toISOString(); fs.writeFileSync(file(s.runId), JSON.stringify(s, null, 2)); };
+
+const [cmd, ...args] = process.argv.slice(2);
+switch (cmd) {
+  case 'init': {
+    const goal = args.join(' ').trim() || die('goal required');
+    const runId = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    fs.mkdirSync(path.join(RUNS, runId), { recursive: true });
+    const gi = path.join(ROOT, '.gitignore');
+    if (!fs.existsSync(gi)) fs.writeFileSync(gi, 'runs/*/traces/\n');
+    const s = { runId, goal, phase: 'UNDERSTAND', healAttempts: 0, maxHeal: MAX_HEAL,
+      history: [{ phase: 'UNDERSTAND', at: new Date().toISOString() }], reasoning: [], artifacts: {},
+      createdAt: new Date().toISOString() };
+    save(s);
+    console.log(runId);
+    break;
+  }
+  case 'status': {
+    const s = load(args[0]);
+    console.log(JSON.stringify({ runId: s.runId, goal: s.goal, phase: s.phase,
+      next: ALLOWED[s.phase], healAttempts: `${s.healAttempts}/${s.maxHeal}`,
+      artifacts: s.artifacts, lastReasoning: s.reasoning.at(-1) || null }, null, 2));
+    break;
+  }
+  case 'advance': {
+    const to = (args[0] || '').toUpperCase();
+    if (!PHASES.includes(to)) die(`unknown phase "${to}". Valid: ${PHASES.join(', ')}`);
+    const s = load(args[1]);
+    if (!ALLOWED[s.phase].includes(to)) die(`illegal transition ${s.phase} -> ${to}. Allowed: ${ALLOWED[s.phase].join(', ') || 'none'}`, 4);
+    s.phase = to; s.history.push({ phase: to, at: new Date().toISOString() }); save(s);
+    console.log(`${s.runId}: now in ${to}`);
+    break;
+  }
+  case 'reason': {
+    const phase = (args[0] || '').toUpperCase();
+    let rec; try { rec = JSON.parse(args[1] || ''); } catch { die('reasoning record must be JSON: {"observation","hypothesis","decision","confidence","evidence"}'); }
+    const s = load(args[2]);
+    s.reasoning.push({ phase, at: new Date().toISOString(), ...rec }); save(s);
+    fs.appendFileSync(path.join(RUNS, s.runId, 'reasoning.md'),
+      `\n### ${phase} — ${new Date().toISOString()}\n` +
+      Object.entries(rec).map(([k, v]) => `- **${k}**: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join('\n') + '\n');
+    console.log('recorded');
+    break;
+  }
+  case 'artifact': {
+    const [key, p, id] = args; if (!key || !p) die('usage: pw-state artifact <key> <path>');
+    const s = load(id); s.artifacts[key] = p; save(s); console.log(`artifact ${key} -> ${p}`);
+    break;
+  }
+  case 'heal-attempt': {
+    const s = load(args[0]);
+    if (s.healAttempts >= s.maxHeal) { console.log(`heal budget exhausted (${s.maxHeal})`); process.exit(3); }
+    s.healAttempts += 1; save(s); console.log(`heal attempt ${s.healAttempts}/${s.maxHeal}`);
+    break;
+  }
+  case 'dir': { const s = load(args[0]); console.log(path.join(RUNS, s.runId)); break; }
+  default:
+    console.log('usage: pw-state <init|status|advance|reason|artifact|heal-attempt|dir> ...');
+}

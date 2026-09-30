@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+// Condenses a Playwright JSON report into a compact, token-cheap failure digest.
+//   npx playwright test --reporter=json > .pw-autopilot/last-results.json
+//   pw-results [.pw-autopilot/last-results.json]
+const fs = require('node:fs');
+
+const f = process.argv[2] || '.pw-autopilot/last-results.json';
+if (!fs.existsSync(f)) { console.error(`pw-results: ${f} not found`); process.exit(1); }
+let txt = fs.readFileSync(f, 'utf8');
+const start = txt.indexOf('{'); if (start > 0) txt = txt.slice(start); // strip stray console output
+const report = JSON.parse(txt);
+
+const strip = (s = '') => s.replace(/\u001b\[[0-9;]*m/g, '');
+const out = { passed: 0, failed: 0, flaky: 0, skipped: 0, failures: [] };
+const walk = (suite, trail = []) => {
+  const t = suite.title ? [...trail, suite.title] : trail;
+  for (const spec of suite.specs || []) {
+    for (const test of spec.tests || []) {
+      const st = test.status; // expected | unexpected | flaky | skipped
+      if (st === 'expected') out.passed++;
+      else if (st === 'flaky') out.flaky++;
+      else if (st === 'skipped') out.skipped++;
+      else {
+        out.failed++;
+        const last = test.results?.at(-1) || {};
+        const err = strip(last.error?.message || last.errors?.[0]?.message || 'unknown error');
+        out.failures.push({
+          test: [...t, spec.title].filter(Boolean).join(' › '),
+          project: test.projectName,
+          location: `${spec.file}:${spec.line}`,
+          error: err.split('\n').slice(0, 12).join('\n'),
+          category: classify(err),
+          attachments: (last.attachments || []).filter((a) => a.path).map((a) => `${a.name}: ${a.path}`),
+        });
+      }
+    }
+  }
+  for (const s of suite.suites || []) walk(s, t);
+};
+function classify(e) {
+  if (/strict mode violation/i.test(e)) return 'LOCATOR_AMBIGUOUS';
+  if (/waiting for (locator|getBy)|element\(s\) not found|Timeout .* exceeded.*locator/i.test(e)) return 'LOCATOR_NOT_FOUND';
+  if (/toHaveText|toContainText|toHaveValue|Expected string|Expected:/i.test(e)) return 'ASSERTION_MISMATCH';
+  if (/net::ERR|ECONNREFUSED|page\.goto/i.test(e)) return 'ENVIRONMENT';
+  if (/Test timeout/i.test(e)) return 'TIMEOUT';
+  if (/TypeError|ReferenceError|SyntaxError|is not a function/i.test(e)) return 'CODE_ERROR';
+  return 'UNKNOWN';
+}
+for (const s of report.suites || []) walk(s);
+console.log(JSON.stringify(out, null, 2));
+process.exit(out.failed ? 1 : 0);

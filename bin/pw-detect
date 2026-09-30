@@ -1,0 +1,42 @@
+#!/usr/bin/env node
+// Detects the Playwright setup of the current project so agents adapt instead of assuming.
+const fs = require('node:fs');
+const path = require('node:path');
+
+const cwd = process.cwd();
+const has = (p) => fs.existsSync(path.join(cwd, p));
+const read = (p) => { try { return fs.readFileSync(path.join(cwd, p), 'utf8'); } catch { return ''; } };
+const pkg = (() => { try { return JSON.parse(read('package.json')); } catch { return null; } })();
+const deps = { ...(pkg?.dependencies || {}), ...(pkg?.devDependencies || {}) };
+const cfg = ['playwright.config.ts', 'playwright.config.js', 'playwright.config.mjs'].find(has) || null;
+const cfgText = cfg ? read(cfg) : '';
+const pick = (re) => (cfgText.match(re) || [])[1] || null;
+const pm = has('pnpm-lock.yaml') ? 'pnpm' : has('yarn.lock') ? 'yarn' : has('bun.lockb') ? 'bun' : 'npm';
+
+const walk = (dir, acc = [], depth = 0) => {
+  if (depth > 4 || !fs.existsSync(dir)) return acc;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (['node_modules', '.git', 'dist', 'build', '.pw-autopilot', 'playwright-report', 'test-results'].includes(e.name)) continue;
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) walk(p, acc, depth + 1);
+    else if (/\.(spec|test)\.(t|j)sx?$/.test(e.name)) acc.push(path.relative(cwd, p));
+  }
+  return acc;
+};
+const specs = walk(cwd);
+
+console.log(JSON.stringify({
+  hasPackageJson: !!pkg,
+  packageManager: pm,
+  playwrightInstalled: !!deps['@playwright/test'],
+  playwrightVersion: deps['@playwright/test'] || null,
+  language: has('tsconfig.json') || /\.ts$/.test(cfg || '') ? 'typescript' : 'javascript',
+  config: cfg,
+  testDir: pick(/testDir:\s*['"`]([^'"`]+)/),
+  baseURL: pick(/baseURL:\s*['"`]([^'"`]+)/) || process.env.BASE_URL || null,
+  usesPageObjects: has('pages') || has('tests/pages') || has('e2e/pages') || specs.some((s) => /pages?[\\/]/.test(s)),
+  fixturesFile: ['tests/fixtures.ts', 'e2e/fixtures.ts', 'fixtures/index.ts', 'tests/fixtures/index.ts'].find(has) || null,
+  existingSpecs: specs.length,
+  sampleSpecs: specs.slice(0, 8),
+  ci: has('.github/workflows') ? fs.readdirSync(path.join(cwd, '.github/workflows')) : [],
+}, null, 2));
